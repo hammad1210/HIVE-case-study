@@ -1,0 +1,130 @@
+1. --Import both the files
+
+2. --Check both the files
+
+3. --Command to start Hive
+hive
+
+4. --Create an External table named CosmeticStore to hold the files stored in temporary directory of HDFS
+CREATE EXTERNAL TABLE IF NOT EXISTS CosmeticStore (event_time timestamp, event_type string, product_id string, category_id string, category_code string, brand string, price float, user_id bigint, user_session string) ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' STORED AS TEXTFILE LOCATION '/user/HiveCaseStudy/' tblproperties ("skip.header.line.count"="1");
+
+5. --Enabling heading in the output
+set hive.cli.print.header=True;
+
+6. --Checking if the table creation has been done succesfully & data has been stored from both files into the table
+SELECT * FROM CosmeticStore LIMIT 5;
+
+7. --Find the total revenue generated due to purchases made in October
+SELECT SUM(price) AS Total_Revenue_Oct
+FROM CosmeticStore
+WHERE date_format(event_time, 'MM')=10
+AND
+event_type= 'purchase';
+
+8. --Write a query to yield the total sum of purchases per month in a single output
+SELECT date_format(event_time, 'MM') AS Month, COUNT (event_type) AS Total_of_Purchases
+FROM CosmeticStore
+WHERE event_type='purchase'
+GROUP BY date_format(event_time, 'MM');
+
+9. --Write a query to find the change in revenue generated due to purchases from October to November
+WITH Total_Monthly_Revenue AS (
+SELECT
+SUM (CASE WHEN date_format(event_time, 'MM')=10 THEN price ELSE 0 END) AS October_Revenue,
+SUM (CASE WHEN date_format(event_time, 'MM')=11 THEN price ELSE 0 END) AS November_Revenue
+FROM CosmeticStore
+WHERE event_type= 'purchase'
+AND date_format(event_time, 'MM') in ('10','11')
+)
+SELECT November_Revenue, October_Revenue, (November_Revenue-October_Revenue) AS Difference_Of_Revenue FROM Total_Monthly_Revenue;
+
+10. --Find distinct categories of products. Categories with null code can be ignored.
+SELECT DISTINCT SPLIT(category_code,'\\.')[0] AS Categories
+FROM CosmeticStore
+WHERE SPLIT (category_code,'\\.')[0]<>'';
+
+11. --Find the total number of products available in each category
+SELECT SPLIT(category_code,'\\.')[0] AS Categories, COUNT (product_id) AS Count_Of_Products
+FROM CosmeticStore
+WHERE SPLIT(category_code,'\\.')[0]<>''
+GROUP BY SPLIT(category_code,'\\.')[0]
+ORDER BY Count_Of_Products DESC;
+
+12. --Which brand has the maximum sales in October and November Combined?
+WITH Brand_Max_Sales AS (
+SELECT Brand,
+SUM (CASE WHEN date_format(event_time, 'MM')=10 THEN price ELSE 0 END) AS October_Sales,
+SUM (CASE WHEN date_format(event_time, 'MM')=11 THEN price ELSE 0 END) AS November_Sales
+FROM CosmeticStore
+WHERE(
+event_type='purchase' AND date_format(event_time, 'MM') in ('10','11') AND brand <>''
+GROUP BY brand
+)
+SELECT brand, October_Sales + November_Sales AS Overall_Sales
+FROM Brand_Max_Sales
+ORDER BY Overall_Sales DESC
+LIMIT 1;
+
+13. Which brands increased their sales from October to November?
+WITH Total_Monthly_Revenue AS(
+SELECT brand,
+SUM(CASE WHEN date_format(event_time, 'MM')=10 THEN price ELSE 0 END)as October_Revenue,
+SUM(CASE WHEN date_format(event_time, 'MM')=11 THEN price ELSE 0 END)as November_Revenue
+FROM CosmeticStore
+WHERE event_type='purchase' AND date_format(event_time, 'MM') IN ('10','11')
+GROUP BY brand
+)
+SELECT brand, October_Revenue, November_Revenue, November_Revenue-October_Revenue AS Diff_in_Sales
+FROM Total_Monthly_Revenue
+WHERE (November_Revenue-October_Revenue)>0
+ORDER BY Diff_in_Sales;
+
+14. Your company wants to reward the top 10 users of its website with a Golden Customer Plan. Write a query to generate a list of top 10 users who spend the most.
+--To create Partitioning and bucketing
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.exec.dynamic.partition=true;
+set hive.enforce.bucketing=true;
+
+--Creating table with partition on event_type and clustering on price
+CREATE TABLE IF NOT EXISTS Dynamic_Part_Cluster_CosmeticStore(
+event_time timestamp, product_id string, category_id string, category_code string, brand string, price float, user_id bigint, user_session string
+)
+PARTITIONED BY (event_type string)
+CLUSTERED BY (price) INTO 7 BUCKETS
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+STORED AS TEXTFILE;
+
+-- Adding data from CosmeticStore table into partitioned and clustered table.
+INSERT INTO TABLE Dynamic_Part_Cluster_CosmeticStore
+PARTITION (event_type)
+SELECT event_time, product_id, category_id, category_code, brand, price, user_id, user_session, event_type
+FROM CosmeticStore;
+
+--Checking whether the table has been succesfully created and loaded with the data
+EXIT;
+hadoop fs-ls /user/hive/warehouse/Dynamic_Part_Cluster_CosmeticStore
+
+--Checking if the partitions (event_type=purchase) have been created successfully 
+hadoop fs-ls /user/hive/warehouse/Dynamic_Part_Cluster_CosmeticStore/event_type=purchase
+
+--Checking if the partitions (event_type=cart) have been created successfully 
+hadoop fs-ls /user/hive/warehouse/Dynamic_Part_Cluster_CosmeticStore/event_type=cart
+
+--Checking if the partitions (event_type=remove_from_cart) have been created successfully 
+hadoop fs-ls /user/hive/warehouse/Dynamic_Part_Cluster_CosmeticStore/event_type=remove_from_cart
+
+--Checking if the partitions (event_type=view) have been created successfully 
+hadoop fs-ls /user/hive/warehouse/Dynamic_Part_Cluster_CosmeticStore/event_type=view
+
+--Re-entering Hive
+hive
+
+--Question 8 Query
+SELECT user_id, SUM(price) AS Total_Spend
+FROM Dynamic_Part_Cluster_CosmeticStore
+WHERE event_type='purchase'
+GROUP BY user_id
+ORDER BY Total_Spend DESC
+LIMIT 10;
+
+-- Terminating EMR Cluster
